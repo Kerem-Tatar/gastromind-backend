@@ -157,6 +157,7 @@ async function recommendDish(req, res) {
 
     try {
         const restaurant = await Restaurant.findOne({ slug: restaurantSlug });
+        if (!restaurant) return res.status(404).json({ error: "Restoran bulunamadı" });
 
         let query = {
             restaurant_id: restaurant._id,

@@ -7,7 +7,8 @@ const { uploadImageBuffer } = require('../config/cloudinary');
 
 // --- ONBOARD A NEW RESTAURANT + ITS OWNER ACCOUNT (superadmin only) ---
 async function createRestaurant(req, res) {
-    const { name, slug, type, ai_config, tables_count, ownerUsername, ownerPassword } = req.body;
+    const { name, type, ai_config, tables_count, ownerUsername, ownerPassword } = req.body;
+    const slug = req.body.slug?.trim().toLowerCase();
 
     if (!name || !slug || !ownerUsername || !ownerPassword) {
         return res.status(400).json({ error: "name, slug, ownerUsername ve ownerPassword zorunlu" });
