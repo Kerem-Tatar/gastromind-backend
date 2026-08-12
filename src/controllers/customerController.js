@@ -184,12 +184,18 @@ async function recommendDish(req, res) {
         let aiResponse = getCachedQuestion(restaurant._id, tagA, tagB);
 
         if (!aiResponse) {
-            // Prompt only carries the two chosen tags + persona/tone — not the dish list —
-            // so its size no longer scales with menu size (see AI cost optimization notes).
+            // One example dish per tag keeps the AI grounded in what's actually on the menu —
+            // without it, it guesses a generic dish type for the tag (e.g. assumes "soğuk"
+            // means a cold salad) which can clash with what's really tagged that way (e.g. an
+            // iced coffee). Still just two short names, so prompt size stays menu-size-independent.
+            const exampleA = availableDishes.find(d => d.tags.includes(tagA))?.name || tagA;
+            const exampleB = availableDishes.find(d => d.tags.includes(tagB))?.name || tagB;
+
             const systemPrompt = `
       Sen ${restaurant.name} restoranında çalışan '${restaurant.ai_config.persona_name}' adında zeki bir garsonsun.
       Tonun: ${restaurant.ai_config.tone}.
-      GÖREVİN: "${tagA}" ve "${tagB}" özelliklerini karşılaştıran, kısa ve samimi bir soru yaz.
+      GÖREVİN: "${tagA}" (örnek menü öğesi: ${exampleA}) ve "${tagB}" (örnek menü öğesi: ${exampleB}) özelliklerini karşılaştıran, kısa ve samimi bir soru yaz.
+      Örnek isimleri sorunun içinde birebir kullanmak zorunda değilsin, ama seçenekleri o örneklerle çelişecek bir yemek türü hayal ederek yazma (örn. örnek bir içecekse seçeneği bir salata gibi yazma).
       Anket sorusu gibi durmasın, sohbet eder gibi olsun.
       ÇIKTI FORMATI (JSON): { "question": "...", "optionA": {"text": "...", "related_tag": "${tagA}"}, "optionB": {"text": "...", "related_tag": "${tagB}"} }
     `;
