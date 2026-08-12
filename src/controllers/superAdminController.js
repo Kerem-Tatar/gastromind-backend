@@ -114,10 +114,34 @@ async function updateOwnerCredentials(req, res) {
     }
 }
 
+// --- UPDATE BRANDING: colors, font, logo (superadmin only) ---
+// Body arrives as multipart/form-data (logo is an optional file).
+async function updateBranding(req, res) {
+    const { primary_color, secondary_color, font } = req.body;
+
+    try {
+        const restaurant = await Restaurant.findById(req.params.id);
+        if (!restaurant) return res.status(404).json({ error: "Restoran bulunamadı" });
+
+        if (primary_color) restaurant.branding.primary_color = primary_color;
+        if (secondary_color) restaurant.branding.secondary_color = secondary_color;
+        if (font) restaurant.branding.font = font;
+        if (req.file) {
+            restaurant.branding.logo_url = await uploadImageBuffer(req.file.buffer, `gastromind/${restaurant.slug}/branding`);
+        }
+
+        await restaurant.save();
+        res.json(restaurant.branding);
+    } catch (error) {
+        console.error("Marka Güncelleme Hatası:", error);
+        res.status(500).json({ error: "Sunucu hatası" });
+    }
+}
+
 // --- CATEGORY CRUD FOR A GIVEN RESTAURANT (superadmin only) ---
 // Categories are per-restaurant now — MenuItem.category should match one of these `id`s.
 async function addCategory(req, res) {
-    const { id, name, emoji } = req.body;
+    const { id, name, icon } = req.body;
 
     if (!id || !name) {
         return res.status(400).json({ error: "id ve name zorunlu" });
@@ -131,7 +155,7 @@ async function addCategory(req, res) {
             return res.status(409).json({ error: "Bu kategori id'si zaten var" });
         }
 
-        restaurant.categories.push({ id, name, emoji });
+        restaurant.categories.push({ id, name, icon });
         await restaurant.save();
 
         res.status(201).json(restaurant.categories);
@@ -156,6 +180,46 @@ async function deleteCategory(req, res) {
     }
 }
 
+// --- COMPARISON TAGS: which MenuItem.tags are safe for recommend-dish questions ---
+// (superadmin only). Lists every distinct tag currently used across the restaurant's
+// menu so superadmin can pick which ones make sense as an either/or comparison.
+async function getComparableTags(req, res) {
+    try {
+        const restaurant = await Restaurant.findById(req.params.id);
+        if (!restaurant) return res.status(404).json({ error: "Restoran bulunamadı" });
+
+        const allTags = await MenuItem.distinct('tags', { restaurant_id: restaurant._id });
+        res.json({
+            allTags: allTags.sort(),
+            comparableTags: restaurant.comparable_tags || []
+        });
+    } catch (error) {
+        console.error("Etiket Listeleme Hatası:", error);
+        res.status(500).json({ error: "Sunucu hatası" });
+    }
+}
+
+async function updateComparableTags(req, res) {
+    const { tags } = req.body;
+
+    if (!Array.isArray(tags)) {
+        return res.status(400).json({ error: "tags bir dizi olmalı" });
+    }
+
+    try {
+        const restaurant = await Restaurant.findById(req.params.id);
+        if (!restaurant) return res.status(404).json({ error: "Restoran bulunamadı" });
+
+        restaurant.comparable_tags = tags;
+        await restaurant.save();
+
+        res.json({ comparableTags: restaurant.comparable_tags });
+    } catch (error) {
+        console.error("Etiket Güncelleme Hatası:", error);
+        res.status(500).json({ error: "Sunucu hatası" });
+    }
+}
+
 // --- MENU CRUD FOR A GIVEN RESTAURANT (superadmin only) ---
 async function getRestaurantMenu(req, res) {
     try {
@@ -170,7 +234,7 @@ async function getRestaurantMenu(req, res) {
 // Body arrives as multipart/form-data (superadmin form can attach a photo),
 // so `tags` is a comma-separated string here, not an array.
 async function addMenuItem(req, res) {
-    const { name, description, price, category, tags } = req.body;
+    const { name, description, ingredients, nutrition_info, price, category, tags } = req.body;
 
     if (!name || !category) {
         return res.status(400).json({ error: "name ve category zorunlu" });
@@ -189,6 +253,8 @@ async function addMenuItem(req, res) {
             restaurant_id: restaurant._id,
             name,
             description,
+            ingredients,
+            nutrition_info,
             price: price ? Number(price) : undefined,
             image,
             category,
@@ -197,6 +263,50 @@ async function addMenuItem(req, res) {
         res.status(201).json(item);
     } catch (error) {
         console.error("Ürün Ekleme Hatası:", error);
+        res.status(500).json({ error: "Sunucu hatası" });
+    }
+}
+
+// --- EDIT AN EXISTING MENU ITEM'S TEXT FIELDS (superadmin only) ---
+async function updateMenuItem(req, res) {
+    const { name, description, ingredients, nutrition_info, price, category, tags } = req.body;
+
+    try {
+        const item = await MenuItem.findOne({ _id: req.params.itemId, restaurant_id: req.params.id });
+        if (!item) return res.status(404).json({ error: "Ürün bulunamadı" });
+
+        if (name !== undefined) item.name = name;
+        if (description !== undefined) item.description = description;
+        if (ingredients !== undefined) item.ingredients = ingredients;
+        if (nutrition_info !== undefined) item.nutrition_info = nutrition_info;
+        if (price !== undefined && price !== "") item.price = Number(price);
+        if (category !== undefined) item.category = category;
+        if (tags !== undefined) item.tags = tags.split(',').map(t => t.trim()).filter(Boolean);
+
+        await item.save();
+        res.json(item);
+    } catch (error) {
+        console.error("Ürün Güncelleme Hatası:", error);
+        res.status(500).json({ error: "Sunucu hatası" });
+    }
+}
+
+// --- TOGGLE WHETHER THE OWNER CAN EDIT THEIR OWN MENU CONTENT (superadmin only) ---
+async function updatePermissions(req, res) {
+    const { owner_can_edit_menu_content } = req.body;
+
+    try {
+        const restaurant = await Restaurant.findById(req.params.id);
+        if (!restaurant) return res.status(404).json({ error: "Restoran bulunamadı" });
+
+        if (typeof owner_can_edit_menu_content === 'boolean') {
+            restaurant.owner_can_edit_menu_content = owner_can_edit_menu_content;
+        }
+        await restaurant.save();
+
+        res.json({ owner_can_edit_menu_content: restaurant.owner_can_edit_menu_content });
+    } catch (error) {
+        console.error("Yetki Güncelleme Hatası:", error);
         res.status(500).json({ error: "Sunucu hatası" });
     }
 }
@@ -239,10 +349,15 @@ module.exports = {
     listRestaurants,
     getRestaurant,
     updateOwnerCredentials,
+    updateBranding,
+    updatePermissions,
     addCategory,
     deleteCategory,
+    getComparableTags,
+    updateComparableTags,
     getRestaurantMenu,
     addMenuItem,
+    updateMenuItem,
     updateMenuItemPhoto,
     deleteMenuItem
 };

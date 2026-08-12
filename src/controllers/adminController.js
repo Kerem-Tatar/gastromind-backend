@@ -7,6 +7,7 @@ const Admin = require('../models/Admin');
 const Restaurant = require('../models/Restaurant');
 const Feedback = require('../models/Feedback');
 const AnalyticsReport = require('../models/AnalyticsReport');
+const MenuItem = require('../models/MenuItem');
 
 // --- ADMIN LOGIN (owner or superadmin) ---
 async function login(req, res) {
@@ -126,7 +127,9 @@ async function dashboardStats(req, res) {
             }));
 
             // --- AI PART ---
-            if (existingReport && selectedPeriod !== 'daily') {
+            // Cached for every period including 'daily' (1hr TTL via existingReport's query) —
+            // "today" is the most-viewed tab, so it was the biggest source of repeat AI cost.
+            if (existingReport) {
                 stats.ai = existingReport.ai_summary;
                 stats.cached = true;
             } else {
@@ -167,17 +170,15 @@ async function dashboardStats(req, res) {
                     });
                     stats.ai = completion.choices[0].message.content;
 
-                    if (selectedPeriod !== 'daily') {
-                        await AnalyticsReport.create({
-                            restaurant_id: restaurant._id,
-                            period_type: selectedPeriod,
-                            period_start: startDate,
-                            period_end: endDate,
-                            total_feedback: stats.total,
-                            average_score: stats.score,
-                            ai_summary: stats.ai
-                        });
-                    }
+                    await AnalyticsReport.create({
+                        restaurant_id: restaurant._id,
+                        period_type: selectedPeriod,
+                        period_start: startDate,
+                        period_end: endDate,
+                        total_feedback: stats.total,
+                        average_score: stats.score,
+                        ai_summary: stats.ai
+                    });
 
                 } catch (err) {
                     console.log(err);
@@ -203,4 +204,35 @@ async function dashboardStats(req, res) {
     }
 }
 
-module.exports = { login, dashboardStats };
+// --- OWNER: LIST OWN MENU (content-editing permission required) ---
+async function getOwnMenu(req, res) {
+    try {
+        const items = await MenuItem.find({ restaurant_id: req.admin.restaurant_id });
+        res.json(items);
+    } catch (error) {
+        console.error("Menü Getirme Hatası:", error);
+        res.status(500).json({ error: "Sunucu hatası" });
+    }
+}
+
+// --- OWNER: EDIT OWN MENU ITEM'S CONTENT ONLY (name/price/category/photo stay superadmin-only) ---
+async function updateOwnMenuItem(req, res) {
+    const { description, ingredients, nutrition_info } = req.body;
+
+    try {
+        const item = await MenuItem.findOne({ _id: req.params.itemId, restaurant_id: req.admin.restaurant_id });
+        if (!item) return res.status(404).json({ error: "Ürün bulunamadı" });
+
+        if (description !== undefined) item.description = description;
+        if (ingredients !== undefined) item.ingredients = ingredients;
+        if (nutrition_info !== undefined) item.nutrition_info = nutrition_info;
+
+        await item.save();
+        res.json(item);
+    } catch (error) {
+        console.error("Ürün Güncelleme Hatası:", error);
+        res.status(500).json({ error: "Sunucu hatası" });
+    }
+}
+
+module.exports = { login, dashboardStats, getOwnMenu, updateOwnMenuItem };

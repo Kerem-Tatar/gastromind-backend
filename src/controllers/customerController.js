@@ -5,6 +5,30 @@ const MenuItem = require('../models/MenuItem');
 const Feedback = require('../models/Feedback');
 const AnalyticsReport = require('../models/AnalyticsReport');
 const { analyzeFeedbackWithAI } = require('../services/feedbackAnalysisService');
+const { getCachedQuestion, setCachedQuestion } = require('../services/questionCache');
+
+// --- PUBLIC RESTAURANT PROFILE (name, branding, categories — used by the customer app shell) ---
+async function getRestaurantInfo(req, res) {
+    const { slug } = req.params;
+
+    try {
+        const restaurant = await Restaurant.findOne({ slug });
+        if (!restaurant) return res.status(404).json({ error: "Restoran bulunamadı" });
+
+        res.json({
+            name: restaurant.name,
+            slug: restaurant.slug,
+            logo_url: restaurant.branding?.logo_url || null,
+            primary_color: restaurant.branding?.primary_color,
+            secondary_color: restaurant.branding?.secondary_color,
+            font: restaurant.branding?.font,
+            categories: restaurant.categories || []
+        });
+    } catch (error) {
+        console.error("Restoran Bilgisi Hatası:", error);
+        res.status(500).json({ error: "Restoran bilgisi alınamadı" });
+    }
+}
 
 // --- PUBLIC MENU LISTING (used by the dish-select screen) ---
 async function getMenu(req, res) {
@@ -72,6 +96,61 @@ async function askAi(req, res) {
     }
 }
 
+// --- Pick two tags to split `dishes` on, without calling AI ---
+// Prefers tags whose count is close to half of the set (balanced split), and among
+// those, the pair that co-occurs least (so picking one meaningfully excludes the other's
+// crowd). Keeps recommendDish's prompt tiny regardless of menu size — see AI cost notes.
+//
+// `allowedTags`, when non-empty, restricts candidates to superadmin-curated tags that are
+// known to make sense as a comparison axis (e.g. "sıcak" vs "soğuk", not "italyan" vs
+// "deniz_ürünü") — this is what keeps the AI from being asked to phrase a nonsensical
+// question when "Kararsızım / Hepsi" mixes dishes from unrelated categories. If the
+// current dish pool doesn't have 2 allowed tags left, falls back to all tags for that
+// round rather than breaking the game.
+function pickSplittingTags(dishes, allowedTags = []) {
+    const tagCounts = {};
+    dishes.forEach(d => d.tags.forEach(t => { tagCounts[t] = (tagCounts[t] || 0) + 1; }));
+
+    const total = dishes.length;
+    const balanceScore = (count) => Math.abs(count - total / 2);
+    const allowedSet = new Set(allowedTags);
+
+    let candidateTags = Object.keys(tagCounts)
+        .filter(t => tagCounts[t] > 0 && tagCounts[t] < total) // ignore tags everyone/no one has
+        .filter(t => allowedSet.size === 0 || allowedSet.has(t))
+        .sort((a, b) => balanceScore(tagCounts[a]) - balanceScore(tagCounts[b]))
+        .slice(0, 6); // only compare the most balanced handful — keeps this O(1)-ish
+
+    // Curated list doesn't cover what's left in this round — don't get stuck, widen back out.
+    if (candidateTags.length < 2 && allowedSet.size > 0) {
+        candidateTags = Object.keys(tagCounts)
+            .filter(t => tagCounts[t] > 0 && tagCounts[t] < total)
+            .sort((a, b) => balanceScore(tagCounts[a]) - balanceScore(tagCounts[b]))
+            .slice(0, 6);
+    }
+
+    if (candidateTags.length < 2) {
+        const fallback = Object.keys(tagCounts).sort((a, b) => tagCounts[b] - tagCounts[a]);
+        return [fallback[0] || null, fallback[1] || null];
+    }
+
+    let bestPair = [candidateTags[0], candidateTags[1]];
+    let bestCoOccurrence = Infinity;
+
+    for (let i = 0; i < candidateTags.length; i++) {
+        for (let j = i + 1; j < candidateTags.length; j++) {
+            const [a, b] = [candidateTags[i], candidateTags[j]];
+            const coOccurring = dishes.filter(d => d.tags.includes(a) && d.tags.includes(b)).length;
+            if (coOccurring < bestCoOccurrence) {
+                bestCoOccurrence = coOccurring;
+                bestPair = [a, b];
+            }
+        }
+    }
+
+    return bestPair;
+}
+
 // --- CATEGORY-AWARE RECOMMENDATION SYSTEM (SMART WAITER) ---
 async function recommendDish(req, res) {
     const { restaurantSlug, excludedDishIds, selectedCategory } = req.body;
@@ -89,31 +168,40 @@ async function recommendDish(req, res) {
 
         const availableDishes = await MenuItem.find(query);
 
-        if (availableDishes.length <= 1) {
+        // A handful of leftover dishes is a fine final answer — skip one more AI round.
+        if (availableDishes.length <= 3) {
             return res.json({
                 status: "complete",
                 recommendations: availableDishes
             });
         }
 
-        const dishSummary = availableDishes.map(d => `${d.name} (Etiketler: ${d.tags.join(', ')})`).join('\n');
-        const allActiveTags = [...new Set(availableDishes.flatMap(d => d.tags))];
+        const [tagA, tagB] = pickSplittingTags(availableDishes, restaurant.comparable_tags);
 
-        const systemPrompt = `
+        // Same restaurant + same tag pair has almost certainly been asked before by another
+        // customer — reuse that phrasing instead of paying for a fresh completion.
+        let aiResponse = getCachedQuestion(restaurant._id, tagA, tagB);
+
+        if (!aiResponse) {
+            // Prompt only carries the two chosen tags + persona/tone — not the dish list —
+            // so its size no longer scales with menu size (see AI cost optimization notes).
+            const systemPrompt = `
       Sen ${restaurant.name} restoranında çalışan '${restaurant.ai_config.persona_name}' adında zeki bir garsonsun.
-      ELİNDEKİ SEÇENEKLER: ${dishSummary}
-      MEVCUT ETİKETLER: ${allActiveTags.join(', ')}
-      GÖREVİN: Kalan yemekleri ikiye bölecek mantıklı bir soru sor.
-      ÇIKTI FORMATI (JSON): { "question": "...", "optionA": {"text": "...", "related_tag": "..."}, "optionB": {"text": "...", "related_tag": "..."} }
+      Tonun: ${restaurant.ai_config.tone}.
+      GÖREVİN: "${tagA}" ve "${tagB}" özelliklerini karşılaştıran, kısa ve samimi bir soru yaz.
+      Anket sorusu gibi durmasın, sohbet eder gibi olsun.
+      ÇIKTI FORMATI (JSON): { "question": "...", "optionA": {"text": "...", "related_tag": "${tagA}"}, "optionB": {"text": "...", "related_tag": "${tagB}"} }
     `;
 
-        const completion = await openai.chat.completions.create({
-            messages: [{ role: "system", content: systemPrompt }],
-            model: "gpt-4o-mini",
-            response_format: { type: "json_object" }
-        });
+            const completion = await openai.chat.completions.create({
+                messages: [{ role: "system", content: systemPrompt }],
+                model: "gpt-4o-mini",
+                response_format: { type: "json_object" }
+            });
 
-        const aiResponse = JSON.parse(completion.choices[0].message.content);
+            aiResponse = JSON.parse(completion.choices[0].message.content);
+            setCachedQuestion(restaurant._id, tagA, tagB, aiResponse);
+        }
 
         res.json({
             status: "ongoing",
@@ -165,4 +253,4 @@ async function submitFeedback(req, res) {
     }
 }
 
-module.exports = { getMenu, askAi, recommendDish, submitFeedback };
+module.exports = { getRestaurantInfo, getMenu, askAi, recommendDish, submitFeedback };

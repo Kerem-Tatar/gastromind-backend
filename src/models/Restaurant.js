@@ -17,12 +17,31 @@ const RestaurantSchema = new mongoose.Schema({
     },
     tables_count: { type: Number, default: 10 },
     // Menu categories are per-restaurant, not a global fixed list — MenuItem.category
-    // values should match one of these `id`s. Frontend not wired to this yet.
+    // values should match one of these `id`s. Consumed by the customer-facing app.
     categories: [{
         id: { type: String, required: true },   // e.g. "ana_yemek" — matched against MenuItem.category
         name: { type: String, required: true },  // e.g. "Ana Yemekler" — display label
-        emoji: { type: String, default: "🍽️" }
-    }]
+        icon: { type: String, default: "UtensilsCrossed" } // lucide-react icon name, see ICON_OPTIONS
+    }],
+    // Restaurant-specific look & feel. Set from the superadmin panel, consumed by the
+    // customer-facing app via GET /api/restaurant/:slug.
+    branding: {
+        primary_color: { type: String, default: "#ea580c" },   // hex
+        secondary_color: { type: String, default: "#dc2626" }, // hex
+        font: {
+            type: String,
+            enum: ['Inter', 'Poppins', 'Roboto', 'Montserrat', 'Nunito', 'Work Sans', 'Lato', 'Manrope'],
+            default: 'Inter'
+        },
+        logo_url: { type: String, default: null }
+    },
+    // Whether the restaurant owner (not just superadmin) can edit their own menu's
+    // description/ingredients/nutrition_info. Off by default — superadmin opts them in.
+    owner_can_edit_menu_content: { type: Boolean, default: false },
+    // Allowlist of MenuItem.tags values safe to use as a recommend-dish comparison axis
+    // (e.g. "sıcak" vs "soğuk" makes sense; "italyan" vs "deniz_ürünü" doesn't). Curated
+    // by superadmin per restaurant. Empty = no restriction (all tags eligible).
+    comparable_tags: [{ type: String }]
 });
 
 module.exports = mongoose.model('Restaurant', RestaurantSchema);
