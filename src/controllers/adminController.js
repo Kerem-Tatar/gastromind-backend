@@ -8,6 +8,7 @@ const Restaurant = require('../models/Restaurant');
 const Feedback = require('../models/Feedback');
 const AnalyticsReport = require('../models/AnalyticsReport');
 const MenuItem = require('../models/MenuItem');
+const { getCachedDashboardStats, setCachedDashboardStats } = require('../services/dashboardStatsCache');
 
 // --- ADMIN LOGIN (owner or superadmin) ---
 async function login(req, res) {
@@ -42,6 +43,12 @@ async function dashboardStats(req, res) {
         if (!req.admin.restaurant_id) {
             return res.status(400).json({ error: "Bu hesap bir restorana bağlı değil" });
         }
+
+        const cachedResponse = getCachedDashboardStats(req.admin.restaurant_id, selectedPeriod);
+        if (cachedResponse) {
+            return res.json(cachedResponse);
+        }
+
         const restaurant = await Restaurant.findById(req.admin.restaurant_id);
         if (!restaurant) return res.status(404).json({ error: "Restoran bulunamadı" });
 
@@ -187,7 +194,7 @@ async function dashboardStats(req, res) {
             }
         }
 
-        res.json({
+        const responseBody = {
             period: selectedPeriod,
             totalFeedback: stats.total,
             averageScore: stats.score,
@@ -196,7 +203,9 @@ async function dashboardStats(req, res) {
             topDishes: stats.topDishes,
             categoryStats: stats.categoryStats,
             feedbacksPreview: freshFeedbacks
-        });
+        };
+        setCachedDashboardStats(req.admin.restaurant_id, selectedPeriod, responseBody);
+        res.json(responseBody);
 
     } catch (error) {
         console.error("Dashboard Hatası:", error);
