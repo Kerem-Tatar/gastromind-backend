@@ -21,7 +21,8 @@ const RestaurantSchema = new mongoose.Schema({
     categories: [{
         id: { type: String, required: true },   // e.g. "ana_yemek" — matched against MenuItem.category
         name: { type: String, required: true },  // e.g. "Ana Yemekler" — display label
-        icon: { type: String, default: "UtensilsCrossed" } // lucide-react icon name, see ICON_OPTIONS
+        icon: { type: String, default: "UtensilsCrossed" }, // lucide-react icon name, see ICON_OPTIONS
+        order: { type: Number, required: true, default: 0 } // display order on the customer menu — lower first
     }],
     // Restaurant-specific look & feel. Set from the superadmin panel, consumed by the
     // customer-facing app via GET /api/restaurant/:slug.

@@ -142,10 +142,10 @@ async function updateBranding(req, res) {
 // --- CATEGORY CRUD FOR A GIVEN RESTAURANT (superadmin only) ---
 // Categories are per-restaurant now — MenuItem.category should match one of these `id`s.
 async function addCategory(req, res) {
-    const { id, name, icon } = req.body;
+    const { id, name, icon, order } = req.body;
 
-    if (!id || !name) {
-        return res.status(400).json({ error: "id ve name zorunlu" });
+    if (!id || !name || order === undefined || order === null || order === '') {
+        return res.status(400).json({ error: "id, name ve order zorunlu" });
     }
 
     try {
@@ -156,7 +156,10 @@ async function addCategory(req, res) {
             return res.status(409).json({ error: "Bu kategori id'si zaten var" });
         }
 
-        restaurant.categories.push({ id, name, icon });
+        restaurant.categories.push({ id, name, icon, order: Number(order) });
+        // Customer menu renders categories in this array's order — keep it sorted by
+        // `order` so callers never have to re-sort on read.
+        restaurant.categories.sort((a, b) => a.order - b.order);
         await restaurant.save();
 
         res.status(201).json(restaurant.categories);
